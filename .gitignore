@@ -1,0 +1,15 @@
+# Test binaries
+test_session45_kat
+test_session45_kat.exe
+*.o
+*.obj
+
+# OS scratch
+.DS_Store
+Thumbs.db
+
+# Editor scratch
+*~
+*.swp
+.vscode/
+.idea/
