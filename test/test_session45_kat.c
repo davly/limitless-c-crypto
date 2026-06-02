@@ -241,6 +241,88 @@ static void test_mirror_mark_kat1_digest_match(void) {
           hex_equal(digest, 32, LIMITLESS_KAT1_DIGEST_HEX));
 }
 
+static void test_mirror_mark_verify_rejects_tampered_digest(void) {
+    /* Sign the canonical KAT-1 triple (corpus = 32 x 0x00, payload =
+     * empty, key = empty), then tamper the digest region of the mark and
+     * assert verify rejects. Because the digest occupies body[8..40] and
+     * the body is base64url-encoded after the 8-char "lore@v1:" prefix,
+     * the digest bytes live well past the first ~10 base64 chars; we flip
+     * chars near the start vs near the end of the digest region to lock
+     * in NON-SHORT-CIRCUIT semantics: a tampered FIRST digest byte and a
+     * tampered LAST digest byte must BOTH be rejected. The old early-exit
+     * loop would reject regardless too -- but this regression guards the
+     * verdict so a future constant-time refactor cannot silently break
+     * rejection at either position. */
+    uint8_t corpus[32];
+    memset(corpus, 0, 32);
+
+    char mark_str[64];
+    size_t written = limitless_mirror_mark_sign(corpus, NULL, 0, NULL, 0,
+                                                  mark_str, sizeof(mark_str));
+    CHECK("tamper-test: sign produced 62-char mark", written == 62);
+
+    /* Sanity: pristine mark verifies. */
+    CHECK("tamper-test: pristine mark verifies",
+          limitless_mirror_mark_verify_payload(mark_str, corpus, NULL, 0, NULL, 0) == 1);
+
+    /* (a) Flip one base64 char in the digest region (a char late in the
+     * string, which decodes into a late body byte == late digest byte).
+     * mark_str[8..62] is the 54-char base64 body; index 60 is near the
+     * end -> a digest byte. Pick a char and bump it to a different valid
+     * base64url char so the decode still succeeds (decoded == 40) but the
+     * digest bytes differ. */
+    {
+        char saved = mark_str[60];
+        char repl = (saved == 'A') ? 'B' : 'A';
+        mark_str[60] = repl;
+        CHECK("tamper-test (a): flipped LAST-region base64 char -> verify rejects",
+              limitless_mirror_mark_verify_payload(mark_str, corpus, NULL, 0, NULL, 0) == 0);
+        mark_str[60] = saved; /* restore */
+    }
+
+    /* Verify restoration brought it back to a valid mark. */
+    CHECK("tamper-test: mark restored after (a)",
+          limitless_mirror_mark_verify_payload(mark_str, corpus, NULL, 0, NULL, 0) == 1);
+
+    /* (b) Decode the body, tamper the FIRST digest byte (body[8]) and the
+     * LAST digest byte (body[39]) independently, re-encode, and assert
+     * BOTH reject. This directly exercises the non-short-circuit property:
+     * a mismatch at the first digest byte and a mismatch at the last
+     * digest byte are each rejected. */
+    {
+        uint8_t body[40];
+        size_t decoded = limitless_mirror_mark_b64url_decode(
+            mark_str + 8, 54, body, 40);
+        CHECK("tamper-test (b): body decodes to 40 bytes", decoded == 40);
+
+        /* Tamper FIRST digest byte (body index 8). */
+        {
+            uint8_t orig = body[8];
+            body[8] = (uint8_t)(orig ^ 0xFFu);
+            char tampered[64];
+            for (int k = 0; k < 8; k++) tampered[k] = mark_str[k]; /* "lore@v1:" */
+            size_t enc = limitless_mirror_mark_b64url_encode(body, 40, tampered + 8);
+            tampered[8 + enc] = '\0';
+            CHECK("tamper-test (b): FIRST digest byte flipped -> verify rejects",
+                  limitless_mirror_mark_verify_payload(tampered, corpus, NULL, 0, NULL, 0) == 0);
+            body[8] = orig; /* restore */
+        }
+
+        /* Tamper LAST digest byte (body index 39). */
+        {
+            uint8_t orig = body[39];
+            body[39] = (uint8_t)(orig ^ 0xFFu);
+            char tampered[64];
+            for (int k = 0; k < 8; k++) tampered[k] = mark_str[k];
+            size_t enc = limitless_mirror_mark_b64url_encode(body, 40, tampered + 8);
+            tampered[8 + enc] = '\0';
+            CHECK("tamper-test (b): LAST digest byte flipped -> verify rejects",
+                  limitless_mirror_mark_verify_payload(tampered, corpus, NULL, 0, NULL, 0) == 0);
+            body[39] = orig; /* restore */
+        }
+    }
+}
+
 static void test_cross_prefix_byte_identical(void) {
     /* The three instantiations MUST produce byte-identical output for
      * the same input. This pins the macro-prefix-discrimination property
@@ -293,6 +375,7 @@ int main(void) {
     test_limitless_default_kat1_reproduces();
     test_mirror_mark_sign_verify_roundtrip();
     test_mirror_mark_kat1_digest_match();
+    test_mirror_mark_verify_rejects_tampered_digest();
     test_cross_prefix_byte_identical();
 
     fprintf(stdout, "==============================================================================\n");

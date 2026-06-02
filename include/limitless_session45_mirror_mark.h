@@ -217,6 +217,27 @@ static inline void LIMITLESS_C_CRYPTO_NAME(mirror_mark_hex_encode)(const uint8_t
  * Sign / verify
  * ============================================================ */
 
+/* Constant-time byte-array equality.
+ *
+ * Returns 1 iff a[0..n] == b[0..n], scanning all n bytes regardless of
+ * where (or whether) a mismatch occurs. The branch-free XOR accumulator
+ * means the running time and control flow are independent of the secret
+ * data, so verify_payload cannot leak the position of the first
+ * differing digest byte via an early-exit timing side channel.
+ *
+ * Cohort parity: matches the foundry-Rust reference
+ * `constant_time_eq` / `hmac.rs:89` (accumulate `diff |= a^b`, return
+ * `diff == 0`). */
+static inline int LIMITLESS_C_CRYPTO_NAME(mirror_mark_ct_eq)(
+        const uint8_t *a, const uint8_t *b, size_t n) {
+    uint8_t diff = 0u;
+    size_t i;
+    for (i = 0; i < n; i++) {
+        diff |= (uint8_t)(a[i] ^ b[i]);
+    }
+    return diff == 0u;
+}
+
 /* Compute the cohort-canonical HMAC input for a (corpus, payload)
  * triple and produce the 32-byte digest in `out_digest`.
  *
@@ -359,17 +380,22 @@ static inline int LIMITLESS_C_CRYPTO_NAME(mirror_mark_verify_payload)(
         body, LIMITLESS_MIRROR_MARK_BODY_LEN);
     if (decoded != LIMITLESS_MIRROR_MARK_BODY_LEN) return 0;
 
-    for (i = 0; i < LIMITLESS_MIRROR_MARK_CORPUS_PREFIX_LEN; i++) {
-        if (body[i] != corpus_sha[i]) return 0;
-    }
-
     uint8_t expected_digest[LIMITLESS_MIRROR_MARK_DIGEST_LEN];
     LIMITLESS_C_CRYPTO_NAME(mirror_mark_compute_digest)(corpus_sha, payload, payload_len,
                                                           key, key_len, expected_digest);
-    for (i = 0; i < LIMITLESS_MIRROR_MARK_DIGEST_LEN; i++) {
-        if (body[LIMITLESS_MIRROR_MARK_CORPUS_PREFIX_LEN + i] != expected_digest[i]) return 0;
-    }
-    return 1;
+
+    /* Constant-time, non-short-circuiting compare of BOTH the secret-
+     * derived 8-byte corpus prefix and the 32-byte HMAC digest. Both
+     * ct_eq calls run to full length and are AND-combined into a single
+     * return so neither path leaks the position of a mismatch through a
+     * data-dependent early exit. (The prefix/length/base64 structural
+     * checks above stay early-exit -- they are not secret-dependent.) */
+    int corpus_ok = LIMITLESS_C_CRYPTO_NAME(mirror_mark_ct_eq)(
+        body, corpus_sha, LIMITLESS_MIRROR_MARK_CORPUS_PREFIX_LEN);
+    int digest_ok = LIMITLESS_C_CRYPTO_NAME(mirror_mark_ct_eq)(
+        body + LIMITLESS_MIRROR_MARK_CORPUS_PREFIX_LEN, expected_digest,
+        LIMITLESS_MIRROR_MARK_DIGEST_LEN);
+    return (corpus_ok & digest_ok);
 }
 
 /* Extract the 32-byte HMAC digest from a Mirror-Mark v1 string.

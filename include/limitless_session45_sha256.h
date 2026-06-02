@@ -57,8 +57,11 @@
  *   - A production cryptographic library. There is no constant-time
  *     compare here; no zeroize-on-drop; no FIPS validation suite; no
  *     side-channel hardening for cache-timing attacks. The
- *     `limitless_session45_mirror_mark.h` sibling carries a constant-
- *     time-compare verify path.
+ *     `limitless_session45_mirror_mark.h` sibling does carry a
+ *     constant-time-compare verify path (`mirror_mark_ct_eq`, used by
+ *     `mirror_mark_verify_payload` for both the corpus-prefix and the
+ *     HMAC-digest compare) -- branch-free, non-short-circuiting, matching
+ *     the foundry-Rust `constant_time_eq` reference.
  *
  * Apache 2.0 -- see LICENSE.
  */
