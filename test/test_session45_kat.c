@@ -323,6 +323,66 @@ static void test_mirror_mark_verify_rejects_tampered_digest(void) {
     }
 }
 
+static void test_mirror_mark_rejects_noncanonical_b64(void) {
+    /* Wire-form non-malleability / cross-substrate parity regression.
+     *
+     * The mark body is 40 bytes -> 54 base64url chars. The final char of a
+     * canonical encoding carries only the top 2 bits of body[39]; its low 4
+     * bits are unused and MUST be zero. Strict cohort decoders (Go
+     * RawURLEncoding, Rust base64 strict) reject any non-zero trailing bits.
+     *
+     * Before the fix, this C decoder silently discarded those bits, so
+     * mutating the last char to a value sharing the same top 2 bits produced
+     * a DIFFERENT, non-canonical string that nonetheless decoded to the SAME
+     * body and verified TRUE -- a malleable wire form. This test pins that
+     * such non-canonical strings are now rejected (verify == 0 AND decode
+     * returns 0), while the canonical mark still verifies. */
+    uint8_t corpus[32];
+    memset(corpus, 0, 32);
+
+    char mark_str[64];
+    size_t written = limitless_mirror_mark_sign(corpus, NULL, 0, NULL, 0,
+                                                  mark_str, sizeof(mark_str));
+    CHECK("noncanon-b64: sign produced 62-char mark", written == 62);
+    CHECK("noncanon-b64: pristine canonical mark verifies",
+          limitless_mirror_mark_verify_payload(mark_str, corpus, NULL, 0, NULL, 0) == 1);
+
+    /* The last char of the string is mark_str[61] (body chars are
+     * mark_str[8..62)). Find an alternative base64url char that shares the
+     * same top 2 bits (same decoded value >> 4) but differs in the low bits,
+     * so a non-strict decoder would yield the same body. */
+    char last = mark_str[61];
+    uint8_t dv = limitless_mirror_mark_b64url_decode_char(last);
+    int found_alt = 0;
+    for (int c = 0; c < 128; c++) {
+        uint8_t v = limitless_mirror_mark_b64url_decode_char((char)c);
+        if (v == 0xFFu) continue;
+        if (v != dv && (uint8_t)(v >> 4) == (uint8_t)(dv >> 4)) {
+            char m2[64];
+            memcpy(m2, mark_str, sizeof(m2));
+            m2[61] = (char)c;
+            found_alt = 1;
+            /* Non-canonical string must be rejected by verify ... */
+            CHECK("noncanon-b64: alt-last-char string rejected by verify",
+                  limitless_mirror_mark_verify_payload(m2, corpus, NULL, 0, NULL, 0) == 0);
+            /* ... and decode must fail outright (return 0), not silently
+             * discard the non-zero trailing bits. */
+            uint8_t body[40];
+            size_t dec = limitless_mirror_mark_b64url_decode(m2 + 8, 54, body, 40);
+            CHECK("noncanon-b64: decode of non-canonical tail returns 0", dec == 0u);
+            break;
+        }
+    }
+    CHECK("noncanon-b64: found an alternative trailing char to test", found_alt == 1);
+
+    /* The canonical mark is unaffected: it still decodes to 40 bytes. */
+    {
+        uint8_t body[40];
+        size_t dec = limitless_mirror_mark_b64url_decode(mark_str + 8, 54, body, 40);
+        CHECK("noncanon-b64: canonical mark still decodes to 40 bytes", dec == 40u);
+    }
+}
+
 static void test_cross_prefix_byte_identical(void) {
     /* The three instantiations MUST produce byte-identical output for
      * the same input. This pins the macro-prefix-discrimination property
@@ -376,6 +436,7 @@ int main(void) {
     test_mirror_mark_sign_verify_roundtrip();
     test_mirror_mark_kat1_digest_match();
     test_mirror_mark_verify_rejects_tampered_digest();
+    test_mirror_mark_rejects_noncanonical_b64();
     test_cross_prefix_byte_identical();
 
     fprintf(stdout, "==============================================================================\n");

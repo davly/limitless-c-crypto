@@ -179,6 +179,13 @@ static inline size_t LIMITLESS_C_CRYPTO_NAME(mirror_mark_b64url_decode)(const ch
         if (a == 0xFFu || b == 0xFFu) return 0u;
         if (o + 1 > out_max) return 0u;
         uint32_t v = ((uint32_t)a << 18) | ((uint32_t)b << 12);
+        /* Canonical-form check: a 2-char tail encodes exactly 1 byte, so the
+         * low 4 bits of `b` (= bits 0..3 of the byte's continuation) MUST be
+         * zero. Strict base64url decoders (Go RawURLEncoding, Rust base64
+         * strict) reject non-zero trailing bits; accepting them here would
+         * make the mark wire-form malleable (distinct strings verifying as
+         * the same mark) and break cohort cross-substrate parity. */
+        if ((b & 0x0Fu) != 0u) return 0u;
         out[o++] = (uint8_t)((v >> 16) & 0xFFu);
     } else if (rem == 3u) {
         uint8_t a = LIMITLESS_C_CRYPTO_NAME(mirror_mark_b64url_decode_char)(in[i]);
@@ -187,6 +194,10 @@ static inline size_t LIMITLESS_C_CRYPTO_NAME(mirror_mark_b64url_decode)(const ch
         if (a == 0xFFu || b == 0xFFu || c == 0xFFu) return 0u;
         if (o + 2 > out_max) return 0u;
         uint32_t v = ((uint32_t)a << 18) | ((uint32_t)b << 12) | ((uint32_t)c << 6);
+        /* Canonical-form check: a 3-char tail encodes exactly 2 bytes, so the
+         * low 2 bits of `c` MUST be zero (same malleability/parity rationale
+         * as the 2-char tail above). */
+        if ((c & 0x03u) != 0u) return 0u;
         out[o++] = (uint8_t)((v >> 16) & 0xFFu);
         out[o++] = (uint8_t)((v >> 8)  & 0xFFu);
     } else if (rem != 0u) {
