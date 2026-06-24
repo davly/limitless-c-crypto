@@ -420,6 +420,106 @@ static void test_rfc_4231_4_2(void) {
                     "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"));
 }
 
+static void test_rfc_4231_4_4_longkey(void) {
+    /* RFC 4231 §4.4 -- "Test Using Larger Than Block-Size Key - Hash Key
+     * First". key = 131 x 0xaa (> 64-byte SHA-256 block), data = the test
+     * string. This exercises the RFC 2104 §2 key-is-hashed-first branch
+     * (key' = SHA-256(key)) in the ONE-SHOT limitless_hmac_sha256, which is
+     * otherwise NEVER hit by the suite (every other keyed test uses a
+     * <=64-byte or empty key).
+     *
+     * HMAC-SHA256(131 x 0xaa, "Test Using Larger Than Block-Size Key - Hash
+     * Key First") =
+     *   60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54 */
+    uint8_t key[131];
+    memset(key, 0xaa, sizeof(key));
+    const char *data = "Test Using Larger Than Block-Size Key - Hash Key First";
+    uint8_t digest[32];
+    limitless_hmac_sha256(key, sizeof(key), (const uint8_t *)data, strlen(data), digest);
+    CHECK("RFC 4231 §4.4 long-key (131-byte) test vector",
+          hex_equal(digest, 32,
+                    "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"));
+}
+
+static void test_rfc_4231_4_5_longkey(void) {
+    /* RFC 4231 §4.5 -- same 131 x 0xaa long key, with a larger-than-block-
+     * size data block. Pins the key-is-hashed-first branch a second time,
+     * with multi-block data, against the published vector.
+     *
+     * HMAC-SHA256(131 x 0xaa, "This is a test using a larger than
+     * block-size key and a larger than block-size data. The key needs to
+     * be hashed before being used by the HMAC algorithm.") =
+     *   9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2 */
+    uint8_t key[131];
+    memset(key, 0xaa, sizeof(key));
+    const char *data =
+        "This is a test using a larger than block-size key and a larger "
+        "than block-size data. The key needs to be hashed before being "
+        "used by the HMAC algorithm.";
+    uint8_t digest[32];
+    limitless_hmac_sha256(key, sizeof(key), (const uint8_t *)data, strlen(data), digest);
+    CHECK("RFC 4231 §4.5 long-key (131-byte key, multi-block data) test vector",
+          hex_equal(digest, 32,
+                    "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2"));
+}
+
+static void test_mirror_mark_longkey_crossimpl_agreement(void) {
+    /* Cross-implementation agreement on the key_len > 64 branch.
+     *
+     * The else-branch key' = SHA-256(key) is implemented TWICE and
+     * independently: once in the one-shot limitless_hmac_sha256
+     * (limitless_session45_hmac_sha256.h) and once in the manually-streamed
+     * limitless_mirror_mark_compute_digest used by sign/verify
+     * (limitless_session45_mirror_mark.h). Every other keyed test uses an
+     * empty/short key, so the two long-key copies are never cross-checked
+     * against each other. This pins them in lockstep: a future off-by-one
+     * in the 32-byte key-hash copy, a wrong khash length, or a divergence
+     * between the two copies on a long key would break this test.
+     *
+     * The mark digest is HMAC-SHA256(key, 0x01 || corpus_sha[0..32] ||
+     * payload), so we compute the one-shot HMAC over exactly that
+     * 0x01-prefixed input and assert the streamed digest extracted from a
+     * signed mark equals it -- using a >64-byte key so BOTH take the
+     * key-is-hashed-first path. */
+    uint8_t corpus[32];
+    for (size_t i = 0; i < 32; i++) corpus[i] = (uint8_t)(i + 1u); /* non-trivial corpus */
+
+    const uint8_t payload[5] = { 'h', 'e', 'l', 'l', 'o' };
+
+    uint8_t key[131];
+    memset(key, 0xaa, sizeof(key)); /* 131 > 64 -> key-is-hashed-first branch */
+
+    /* Streamed path: sign the mark, then extract the 32-byte digest. */
+    char mark_str[64];
+    size_t written = limitless_mirror_mark_sign(corpus, payload, sizeof(payload),
+                                                 key, sizeof(key),
+                                                 mark_str, sizeof(mark_str));
+    CHECK("longkey-crossimpl: sign produced 62-char mark", written == 62);
+
+    uint8_t streamed_digest[32];
+    int extracted = limitless_mirror_mark_extract_digest(mark_str, streamed_digest);
+    CHECK("longkey-crossimpl: extract_digest succeeds", extracted == 1);
+
+    /* One-shot path: HMAC-SHA256(key, 0x01 || corpus || payload). */
+    uint8_t signed_input[1 + 32 + sizeof(payload)];
+    signed_input[0] = 0x01u;
+    memcpy(signed_input + 1, corpus, 32);
+    memcpy(signed_input + 1 + 32, payload, sizeof(payload));
+
+    uint8_t oneshot_digest[32];
+    limitless_hmac_sha256(key, sizeof(key),
+                          signed_input, sizeof(signed_input),
+                          oneshot_digest);
+
+    CHECK("longkey-crossimpl: streamed mirror_mark digest == one-shot hmac_sha256 (>64-byte key)",
+          memcmp(streamed_digest, oneshot_digest, 32) == 0);
+
+    /* Belt-and-braces: the mark must also verify against the same triple. */
+    CHECK("longkey-crossimpl: long-key mark verifies",
+          limitless_mirror_mark_verify_payload(mark_str, corpus, payload, sizeof(payload),
+                                               key, sizeof(key)) == 1);
+}
+
 int main(void) {
     fprintf(stdout, "test_session45_kat -- limitless-c-crypto R151 KAT-1 + macro-prefix verification\n");
     fprintf(stdout, "==============================================================================\n");
@@ -429,6 +529,9 @@ int main(void) {
     test_sha256_fips_180_4_empty();
     test_sha256_long_input();
     test_rfc_4231_4_2();
+    test_rfc_4231_4_4_longkey();
+    test_rfc_4231_4_5_longkey();
+    test_mirror_mark_longkey_crossimpl_agreement();
     test_ember_kat1_reproduces();
     test_bedrock_c_kat1_reproduces();
     test_cortex_kat1_reproduces();
