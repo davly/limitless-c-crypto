@@ -41,8 +41,8 @@
  * verifiable via the OpenSSL reference command published in the cohort
  * memory doc:
  *
- *   printf '\x01' && printf '\x00%.0s' {1..32} | openssl dgst -sha256 \
- *     -mac hmac -macopt key:
+ *   printf '\x01' > kat1.bin; printf '\x00%.0s' $(seq 1 32) >> kat1.bin
+ *   openssl dgst -sha256 -hmac "" kat1.bin
  *
  * Apache 2.0 -- see LICENSE.
  */

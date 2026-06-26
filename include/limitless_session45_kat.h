@@ -29,8 +29,8 @@
  *
  *   printf '\x01' > /tmp/kat1.bin
  *   printf '\x00%.0s' $(seq 1 32) >> /tmp/kat1.bin
- *   openssl dgst -sha256 -mac hmac -macopt key: /tmp/kat1.bin
- *   # -> HMAC-SHA256(stdin)= 239a7d0d3f1bbe3a98aede01e2ad818c2db60b7177c02e2f015035b2b5b7dbca
+ *   openssl dgst -sha256 -hmac "" /tmp/kat1.bin
+ *   # -> HMAC-SHA2-256(/tmp/kat1.bin)= 239a7d0d3f1bbe3a98aede01e2ad818c2db60b7177c02e2f015035b2b5b7dbca
  *
  * ## Canonical input
  *
